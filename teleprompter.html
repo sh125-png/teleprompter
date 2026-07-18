@@ -58,7 +58,7 @@
 
   /* 읽는 위치 기준선 */
   #guideline {
-    position: absolute; left: 0; right: 0; top: 40vh; height: 2px;
+    position: absolute; left: 0; right: 0; top: 35vh; height: 2px;
     background: rgba(255,213,74,0.35); pointer-events: none; z-index: 5;
   }
 </style>
@@ -170,13 +170,14 @@ function updateHighlight() {
 }
 
 function scrollToCursor() {
-  const idx = Math.min(cursor, words.length - 1);
+  // 현재 단어보다 LEAD 만큼 앞을 기준선에 → 읽을 내용이 미리 보여 체감속도↑
+  const idx = Math.min(cursor + LEAD, words.length - 1);
   if (idx < 0) return;
   const el = words[idx].el;
   const areaRect = scrollArea.getBoundingClientRect();
   const elRect = el.getBoundingClientRect();
-  // 현재 단어를 화면 40% 지점(기준선)에 맞춤
-  const targetY = areaRect.height * 0.4;
+  // 기준선을 살짝 위(35%)로 → 아래로 더 많은 대본 노출
+  const targetY = areaRect.height * 0.35;
   const delta = (elRect.top - areaRect.top) - targetY;
   scrollArea.scrollBy({ top: delta, behavior: 'smooth' });
 }
@@ -185,10 +186,14 @@ function scrollToCursor() {
 // 최근 발화 여러 단어를 대본에 정렬해 '가장 많이 맞는' 위치로 이동.
 // - 놓친 단어는 건너뜀(GAP 허용) → 빨리 말해 한둘 흘려도 안 멈춤.
 // - 중복 구절은 문맥이 더 많이 맞는 위치로 가므로 엉뚱하게 안 튐.
-const SEARCH_AHEAD = 14; // 현재 위치 기준 앞으로 탐색 범위
+const SEARCH_AHEAD = 20; // 현재 위치 기준 앞으로 탐색 범위(회복력↑)
 const SEARCH_BACK = 2;   // 살짝 되짚기 허용
-const GAP = 2;           // 대본에서 건너뛸 수 있는 최대 단어 수(오인식 흡수)
+const GAP = 3;           // 대본에서 건너뛸 수 있는 최대 단어 수(오인식 흡수, 빨리말 대응)
 const TAIL = 8;          // 최근 발화 몇 단어만 사용(드리프트 방지)
+const PENALTY = 0.7;     // 멀수록 감점(중복 오점프 억제). 클수록 더 가까운 위치 고집
+const JUMP_LIMIT = 4;    // 이보다 멀리 뛰려면 다단어 확인 필요
+const CONFIRM = 3;       // 큰 점프 허용에 필요한 최소 일치 단어 수
+const LEAD = 2;          // 현재 단어보다 몇 단어 앞을 기준선에(체감 속도↑)
 
 // start에서 spoken을 대본에 정렬 → { end: 도달위치, matched: 맞은 개수 }
 function alignAt(start, spoken) {
@@ -212,18 +217,22 @@ function processTranscript(transcript, commit) {
   const lo = Math.max(0, cursor - SEARCH_BACK);
   const hi = Math.min(cursor + SEARCH_AHEAD, words.length);
 
-  let best = { end: cursor, matched: 0, dist: Infinity };
+  // 점수 = 맞은 개수 − 거리*페널티. 가까운 위치를 강하게 선호 → 먼 중복 억제.
+  let best = { end: cursor, matched: 0, score: -Infinity };
   for (let start = lo; start <= hi; start++) {
     const r = alignAt(start, spoken);
+    if (r.matched === 0) continue;
     const dist = Math.abs(start - cursor);
-    // 더 많이 맞으면 채택, 동점이면 현재 커서에 가까운 쪽(중복 오점프 방지)
-    if (r.matched > best.matched || (r.matched === best.matched && dist < best.dist)) {
-      best = { end: r.end, matched: r.matched, dist: dist };
+    const score = r.matched - dist * PENALTY;
+    if (score > best.score) {
+      best = { end: r.end, matched: r.matched, score: score };
     }
   }
 
-  // 앞으로만 이동, 최소 1단어 이상 맞아야 이동(오작동 방지)
-  if (best.matched >= 1 && best.end > cursor) {
+  const jump = best.end - cursor;
+  if (best.matched >= 1 && jump > 0) {
+    // 멀리 뛰려면 여러 단어가 확인돼야 함(중복 단어 하나로 훌쩍 넘어감 방지)
+    if (jump > JUMP_LIMIT && best.matched < CONFIRM) return;
     cursor = best.end;
     updateHighlight();
     scrollToCursor();
