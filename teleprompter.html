@@ -181,42 +181,59 @@ function scrollToCursor() {
   scrollArea.scrollBy({ top: delta, behavior: 'smooth' });
 }
 
-// ---------- 매칭 엔진 ----------
-// 좁은 윈도우 순차 매칭. 반복 구절(시)에서도 현재 위치 근처만 전진 → 멀리 안 튐.
-const WINDOW = 4; // 앞으로 최대 몇 단어까지만 탐색(작을수록 안 튐)
+// ---------- 매칭 엔진 (다중 단어 정렬) ----------
+// 최근 발화 여러 단어를 대본에 정렬해 '가장 많이 맞는' 위치로 이동.
+// - 놓친 단어는 건너뜀(GAP 허용) → 빨리 말해 한둘 흘려도 안 멈춤.
+// - 중복 구절은 문맥이 더 많이 맞는 위치로 가므로 엉뚱하게 안 튐.
+const SEARCH_AHEAD = 14; // 현재 위치 기준 앞으로 탐색 범위
+const SEARCH_BACK = 2;   // 살짝 되짚기 허용
+const GAP = 2;           // 대본에서 건너뛸 수 있는 최대 단어 수(오인식 흡수)
+const TAIL = 8;          // 최근 발화 몇 단어만 사용(드리프트 방지)
 
-// startCursor에서 시작해 spoken 단어열을 순차 매칭하고 도달한 위치 반환
-function matchFrom(startCursor, spoken) {
-  let c = startCursor;
+// start에서 spoken을 대본에 정렬 → { end: 도달위치, matched: 맞은 개수 }
+function alignAt(start, spoken) {
+  let p = start, m = 0;
   for (const sw of spoken) {
-    const limit = Math.min(c + WINDOW, words.length);
-    for (let i = c; i < limit; i++) {
-      if (wordsMatch(sw, words[i].norm)) { c = i + 1; break; }
+    let hit = -1;
+    const kmax = Math.min(GAP, words.length - 1 - p);
+    for (let k = 0; k <= kmax; k++) {
+      if (wordsMatch(sw, words[p + k].norm)) { hit = p + k; break; }
+    }
+    if (hit >= 0) { p = hit + 1; m++; } // 맞으면 전진, 아니면 그 발화단어 무시
+  }
+  return { end: p, matched: m };
+}
+
+function processTranscript(transcript, commit) {
+  let spoken = transcript.split(/\s+/).map(normalize).filter(w => w.length > 0);
+  if (spoken.length === 0) return;
+  if (spoken.length > TAIL) spoken = spoken.slice(spoken.length - TAIL);
+
+  const lo = Math.max(0, cursor - SEARCH_BACK);
+  const hi = Math.min(cursor + SEARCH_AHEAD, words.length);
+
+  let best = { end: cursor, matched: 0, dist: Infinity };
+  for (let start = lo; start <= hi; start++) {
+    const r = alignAt(start, spoken);
+    const dist = Math.abs(start - cursor);
+    // 더 많이 맞으면 채택, 동점이면 현재 커서에 가까운 쪽(중복 오점프 방지)
+    if (r.matched > best.matched || (r.matched === best.matched && dist < best.dist)) {
+      best = { end: r.end, matched: r.matched, dist: dist };
     }
   }
-  return c;
+
+  // 앞으로만 이동, 최소 1단어 이상 맞아야 이동(오작동 방지)
+  if (best.matched >= 1 && best.end > cursor) {
+    cursor = best.end;
+    updateHighlight();
+    scrollToCursor();
+  }
 }
 
-// 인식 텍스트 처리. commit=true면 확정 전진(final), false면 임시 미리보기(interim)
-function processTranscript(transcript, commit) {
-  const spoken = transcript.split(/\s+/).map(normalize).filter(w => w.length > 0);
-  if (spoken.length === 0) return;
-
-  // 항상 확정 위치에서 다시 매칭 → interim 반복 처리해도 위치 안정적
-  const newCursor = matchFrom(committedCursor, spoken);
-  if (newCursor > cursor) { cursor = newCursor; }
-  if (commit) { committedCursor = Math.max(committedCursor, cursor); }
-
-  updateHighlight();
-  scrollToCursor();
-}
-
-// 단어 일치 판정: 엄격하게. 완전일치 or 앞부분 일치(조사/어미만 흡수)
+// 단어 일치 판정: 완전일치 or 앞부분 일치(조사/어미 흡수). 1글자는 완전일치만.
 function wordsMatch(a, b) {
   if (a === b) return true;
-  // 짧은 단어(1글자)는 오매칭 많음 → 완전일치만
   if (a.length < 2 || b.length < 2) return false;
-  // 한쪽이 다른 쪽으로 시작(예: '바람이'~'바람') — 조사/어미 흡수. 최소 2글자 공유
   if (a.startsWith(b) || b.startsWith(a)) return true;
   return false;
 }
