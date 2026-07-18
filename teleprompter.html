@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>음성인식 텔레프롬프터</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; background: #000; color: #fff; font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; overflow: hidden; }
+
+  /* ---------- 입력 화면 ---------- */
+  #setup {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    padding: 20px; gap: 14px; background: #000;
+  }
+  #setup h1 { font-size: 22px; color: #ffd54a; font-weight: 700; }
+  #setup p.hint { font-size: 13px; color: #888; line-height: 1.5; }
+  #scriptInput {
+    flex: 1; width: 100%; background: #111; color: #fff; border: 1px solid #333;
+    border-radius: 10px; padding: 16px; font-size: 18px; line-height: 1.6; resize: none;
+  }
+  #startBtn {
+    background: #ffd54a; color: #000; border: none; border-radius: 12px;
+    padding: 18px; font-size: 20px; font-weight: 700; cursor: pointer;
+  }
+  #startBtn:active { background: #f5c400; }
+
+  /* ---------- 프롬프터 화면 ---------- */
+  #prompter { position: absolute; inset: 0; display: none; flex-direction: column; }
+
+  #topbar {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    background: rgba(20,20,20,0.95); border-bottom: 1px solid #222; flex-wrap: wrap;
+    position: relative; z-index: 10;
+  }
+  #topbar button {
+    background: #222; color: #fff; border: 1px solid #444; border-radius: 8px;
+    padding: 10px 14px; font-size: 16px; font-weight: 700; cursor: pointer; min-width: 46px;
+  }
+  #topbar button:active { background: #444; }
+  #micBtn.listening { background: #d32f2f; border-color: #ff5252; }
+  #micBtn.listening::before { content: "● "; }
+  .spacer { flex: 1; }
+  #sizeLabel { font-size: 13px; color: #aaa; min-width: 52px; text-align: center; }
+  #status { font-size: 12px; color: #7fd; width: 100%; text-align: center; padding-top: 2px; min-height: 14px; }
+
+  #scrollArea {
+    flex: 1; overflow-y: scroll; scroll-behavior: smooth;
+    padding: 40vh 24px 60vh 24px; -webkit-overflow-scrolling: touch;
+  }
+  #scriptText {
+    font-size: 44px; line-height: 1.7; color: #fff; font-weight: 600;
+    letter-spacing: 0.3px; word-break: keep-all;
+  }
+  #scriptText .w { transition: color 0.25s, opacity 0.25s; }
+  #scriptText .w.done { color: #666; }
+  #scriptText .w.cur { color: #ffd54a; }
+
+  /* 읽는 위치 기준선 */
+  #guideline {
+    position: absolute; left: 0; right: 0; top: 40vh; height: 2px;
+    background: rgba(255,213,74,0.35); pointer-events: none; z-index: 5;
+  }
+</style>
+</head>
+<body>
+
+<!-- 입력 화면 -->
+<div id="setup">
+  <h1>🎤 음성인식 텔레프롬프터</h1>
+  <p class="hint">
+    <b>삼성 인터넷</b>으로 열어 사용하세요. 대본 붙여넣고 <b>시작</b>을 누릅니다.<br>
+    ※ 음성인식은 <b>인터넷 연결</b>과 <b>마이크 권한</b>이 필요합니다.<br>
+    ※ 파일을 직접 열어(<code>file://</code>) 마이크가 안 되면 GitHub Pages 등 <b>https 주소</b>로 올려서 여세요.
+  </p>
+  <textarea id="scriptInput" placeholder="여기에 읽을 대본을 붙여넣으세요..."></textarea>
+  <button id="startBtn">시작 ▶</button>
+</div>
+
+<!-- 프롬프터 화면 -->
+<div id="prompter">
+  <div id="topbar">
+    <button id="micBtn">음성 시작</button>
+    <button id="fontMinus">A−</button>
+    <span id="sizeLabel">44px</span>
+    <button id="fontPlus">A＋</button>
+    <div class="spacer"></div>
+    <button id="manualUp" title="위로">▲</button>
+    <button id="manualDown" title="아래로">▼</button>
+    <button id="resetBtn">초기화</button>
+    <div id="status"></div>
+  </div>
+  <div id="guideline"></div>
+  <div id="scrollArea">
+    <div id="scriptText"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ---------- DOM ----------
+const setupEl = document.getElementById('setup');
+const prompterEl = document.getElementById('prompter');
+const scriptInput = document.getElementById('scriptInput');
+const startBtn = document.getElementById('startBtn');
+const micBtn = document.getElementById('micBtn');
+const fontMinus = document.getElementById('fontMinus');
+const fontPlus = document.getElementById('fontPlus');
+const sizeLabel = document.getElementById('sizeLabel');
+const manualUp = document.getElementById('manualUp');
+const manualDown = document.getElementById('manualDown');
+const resetBtn = document.getElementById('resetBtn');
+const scrollArea = document.getElementById('scrollArea');
+const scriptText = document.getElementById('scriptText');
+const statusEl = document.getElementById('status');
+
+// ---------- 상태 ----------
+let words = [];          // { raw, norm, el } 단어 배열
+let cursor = 0;          // 현재까지 읽은 단어 인덱스
+let fontSize = 44;
+let recognition = null;
+let listening = false;   // 사용자가 켠 상태
+let wakeLock = null;
+
+// ---------- 유틸: 단어 정규화 (한글/영문/숫자만, 소문자) ----------
+function normalize(s) {
+  return s.toLowerCase().replace(/[^가-힣a-z0-9]/g, '');
+}
+
+// ---------- 대본 렌더링 ----------
+function buildScript(text) {
+  scriptText.innerHTML = '';
+  words = [];
+  // 줄바꿈 보존하며 토큰화
+  const lines = text.split('\n');
+  lines.forEach((line, li) => {
+    const tokens = line.split(/(\s+)/); // 공백 유지
+    tokens.forEach(tok => {
+      if (tok === '') return;
+      if (/^\s+$/.test(tok)) {
+        scriptText.appendChild(document.createTextNode(tok));
+        return;
+      }
+      const norm = normalize(tok);
+      const span = document.createElement('span');
+      span.className = 'w';
+      span.textContent = tok;
+      scriptText.appendChild(span);
+      if (norm.length > 0) {
+        words.push({ raw: tok, norm: norm, el: span });
+      }
+    });
+    if (li < lines.length - 1) scriptText.appendChild(document.createElement('br'));
+  });
+  cursor = 0;
+  updateHighlight();
+}
+
+// ---------- 하이라이트 & 스크롤 ----------
+function updateHighlight() {
+  for (let i = 0; i < words.length; i++) {
+    const el = words[i].el;
+    el.classList.remove('done', 'cur');
+    if (i < cursor) el.classList.add('done');
+    else if (i === cursor) el.classList.add('cur');
+  }
+}
+
+function scrollToCursor() {
+  const idx = Math.min(cursor, words.length - 1);
+  if (idx < 0) return;
+  const el = words[idx].el;
+  const areaRect = scrollArea.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  // 현재 단어를 화면 40% 지점(기준선)에 맞춤
+  const targetY = areaRect.height * 0.4;
+  const delta = (elRect.top - areaRect.top) - targetY;
+  scrollArea.scrollBy({ top: delta, behavior: 'smooth' });
+}
+
+// ---------- 매칭 엔진 ----------
+// 인식된 텍스트의 단어들을 현재 cursor 앞쪽 윈도우에서 순차 매칭
+function matchTranscript(transcript) {
+  const spoken = transcript.split(/\s+/).map(normalize).filter(w => w.length > 0);
+  if (spoken.length === 0) return;
+
+  const WINDOW = 12; // 앞으로 최대 몇 단어까지 탐색
+  let advanced = false;
+
+  for (const sw of spoken) {
+    let found = -1;
+    const limit = Math.min(cursor + WINDOW, words.length);
+    for (let i = cursor; i < limit; i++) {
+      if (wordsMatch(sw, words[i].norm)) { found = i; break; }
+    }
+    if (found >= 0) {
+      cursor = found + 1;
+      advanced = true;
+    }
+  }
+
+  if (advanced) {
+    updateHighlight();
+    scrollToCursor();
+  }
+}
+
+// 단어 일치 판정: 완전일치 or 한쪽이 다른 쪽 포함(조사/어미 흡수)
+function wordsMatch(a, b) {
+  if (a === b) return true;
+  if (a.length >= 2 && b.length >= 2) {
+    if (a.startsWith(b) || b.startsWith(a)) return true;
+    if (a.includes(b) || b.includes(a)) return true;
+  }
+  return false;
+}
+
+// ---------- 음성 인식 ----------
+function initRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    statusEl.textContent = '이 브라우저는 음성인식 미지원 (크롬 사용 권장)';
+    statusEl.style.color = '#ff8a80';
+    micBtn.disabled = true;
+    return false;
+  }
+  recognition = new SR();
+  recognition.lang = 'ko-KR';
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+
+  let lastInterim = '';
+
+  recognition.onresult = (e) => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const res = e.results[i];
+      const txt = res[0].transcript;
+      if (res.isFinal) {
+        matchTranscript(txt);
+        lastInterim = '';
+      } else {
+        // interim: 이전에 처리 안 한 뒷부분만 매칭 (버벅임 최소화)
+        matchTranscript(txt);
+        lastInterim = txt;
+      }
+    }
+    statusEl.textContent = '듣는 중… (' + Math.min(cursor, words.length) + '/' + words.length + ')';
+  };
+
+  recognition.onerror = (e) => {
+    if (e.error === 'no-speech' || e.error === 'aborted') return; // 무시하고 재시작
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      statusEl.textContent = '마이크 권한 거부됨. 권한 허용 후 다시 시도하세요.';
+      statusEl.style.color = '#ff8a80';
+      stopListening();
+      return;
+    }
+    statusEl.textContent = '오류: ' + e.error;
+  };
+
+  recognition.onend = () => {
+    // API가 스스로 멈춤 → 켜둔 상태면 즉시 재시작 (끊김 없이 계속)
+    if (listening) {
+      try { recognition.start(); } catch (_) {}
+    }
+  };
+  return true;
+}
+
+function startListening() {
+  if (!recognition && !initRecognition()) return;
+  listening = true;
+  micBtn.textContent = '음성 중지';
+  micBtn.classList.add('listening');
+  statusEl.style.color = '#7fd';
+  statusEl.textContent = '듣는 중…';
+  try { recognition.start(); } catch (_) {}
+  requestWakeLock();
+}
+
+function stopListening() {
+  listening = false;
+  micBtn.textContent = '음성 시작';
+  micBtn.classList.remove('listening');
+  statusEl.textContent = '중지됨';
+  if (recognition) { try { recognition.stop(); } catch (_) {} }
+  releaseWakeLock();
+}
+
+micBtn.addEventListener('click', () => {
+  if (listening) stopListening();
+  else startListening();
+});
+
+// ---------- Wake Lock (화면 꺼짐 방지) ----------
+async function requestWakeLock() {
+  try {
+    if ('wakeLock' in navigator) {
+      wakeLock = await navigator.wakeLock.request('screen');
+    }
+  } catch (_) {}
+}
+function releaseWakeLock() {
+  try { if (wakeLock) { wakeLock.release(); wakeLock = null; } } catch (_) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && listening) requestWakeLock();
+});
+
+// ---------- 글자 크기 ----------
+function applyFont() {
+  scriptText.style.fontSize = fontSize + 'px';
+  sizeLabel.textContent = fontSize + 'px';
+  scrollToCursor();
+}
+fontPlus.addEventListener('click', () => { fontSize = Math.min(120, fontSize + 4); applyFont(); });
+fontMinus.addEventListener('click', () => { fontSize = Math.max(20, fontSize - 4); applyFont(); });
+
+// ---------- 수동 스크롤 ----------
+manualUp.addEventListener('click', () => scrollArea.scrollBy({ top: -window.innerHeight * 0.3, behavior: 'smooth' }));
+manualDown.addEventListener('click', () => scrollArea.scrollBy({ top: window.innerHeight * 0.3, behavior: 'smooth' }));
+
+// ---------- 시작 / 초기화 ----------
+startBtn.addEventListener('click', () => {
+  const text = scriptInput.value.trim();
+  if (!text) { alert('대본을 입력하세요.'); return; }
+  buildScript(scriptInput.value);
+  applyFont();
+  setupEl.style.display = 'none';
+  prompterEl.style.display = 'flex';
+  // 전체화면 시도
+  if (document.documentElement.requestFullscreen) {
+    document.documentElement.requestFullscreen().catch(() => {});
+  }
+  scrollArea.scrollTop = 0;
+  initRecognition();
+});
+
+resetBtn.addEventListener('click', () => {
+  stopListening();
+  if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); }
+  prompterEl.style.display = 'none';
+  setupEl.style.display = 'flex';
+  statusEl.textContent = '';
+  cursor = 0;
+});
+</script>
+</body>
+</html>
