@@ -186,14 +186,14 @@ function scrollToCursor() {
 // 최근 발화 여러 단어를 대본에 정렬해 '가장 많이 맞는' 위치로 이동.
 // - 놓친 단어는 건너뜀(GAP 허용) → 빨리 말해 한둘 흘려도 안 멈춤.
 // - 중복 구절은 문맥이 더 많이 맞는 위치로 가므로 엉뚱하게 안 튐.
-const SEARCH_AHEAD = 20; // 현재 위치 기준 앞으로 탐색 범위(회복력↑)
+const SEARCH_AHEAD = 24; // 현재 위치 기준 앞으로 탐색 범위(회복력↑)
 const SEARCH_BACK = 2;   // 살짝 되짚기 허용
-const GAP = 3;           // 대본에서 건너뛸 수 있는 최대 단어 수(오인식 흡수, 빨리말 대응)
-const TAIL = 8;          // 최근 발화 몇 단어만 사용(드리프트 방지)
+const GAP = 4;           // 대본에서 건너뛸 수 있는 최대 단어 수(오인식 흡수, 빨리말 대응)
+const TAIL = 10;         // 최근 발화 몇 단어만 사용(드리프트 방지)
 const PENALTY = 0.7;     // 멀수록 감점(중복 오점프 억제). 클수록 더 가까운 위치 고집
 const JUMP_LIMIT = 4;    // 이보다 멀리 뛰려면 다단어 확인 필요
-const CONFIRM = 3;       // 큰 점프 허용에 필요한 최소 일치 단어 수
-const LEAD = 2;          // 현재 단어보다 몇 단어 앞을 기준선에(체감 속도↑)
+const CONFIRM = 5;       // 큰 점프 허용에 필요한 최소 일치 단어 수(시 반복구 대응)
+const LEAD = 4;          // 현재 단어보다 몇 단어 앞을 기준선에(따라가는 속도↑)
 
 // start에서 spoken을 대본에 정렬 → { end: 도달위치, matched: 맞은 개수 }
 function alignAt(start, spoken) {
