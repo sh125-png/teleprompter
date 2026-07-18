@@ -117,7 +117,8 @@ const statusEl = document.getElementById('status');
 
 // ---------- 상태 ----------
 let words = [];          // { raw, norm, el } 단어 배열
-let cursor = 0;          // 현재까지 읽은 단어 인덱스
+let cursor = 0;          // 현재까지 읽은 단어 인덱스(표시용)
+let committedCursor = 0; // 확정된 위치(final 결과로만 전진). interim 이중처리 방지
 let fontSize = 44;
 let recognition = null;
 let listening = false;   // 사용자가 켠 상태
@@ -154,6 +155,7 @@ function buildScript(text) {
     if (li < lines.length - 1) scriptText.appendChild(document.createElement('br'));
   });
   cursor = 0;
+  committedCursor = 0;
   updateHighlight();
 }
 
@@ -180,39 +182,42 @@ function scrollToCursor() {
 }
 
 // ---------- 매칭 엔진 ----------
-// 인식된 텍스트의 단어들을 현재 cursor 앞쪽 윈도우에서 순차 매칭
-function matchTranscript(transcript) {
+// 좁은 윈도우 순차 매칭. 반복 구절(시)에서도 현재 위치 근처만 전진 → 멀리 안 튐.
+const WINDOW = 4; // 앞으로 최대 몇 단어까지만 탐색(작을수록 안 튐)
+
+// startCursor에서 시작해 spoken 단어열을 순차 매칭하고 도달한 위치 반환
+function matchFrom(startCursor, spoken) {
+  let c = startCursor;
+  for (const sw of spoken) {
+    const limit = Math.min(c + WINDOW, words.length);
+    for (let i = c; i < limit; i++) {
+      if (wordsMatch(sw, words[i].norm)) { c = i + 1; break; }
+    }
+  }
+  return c;
+}
+
+// 인식 텍스트 처리. commit=true면 확정 전진(final), false면 임시 미리보기(interim)
+function processTranscript(transcript, commit) {
   const spoken = transcript.split(/\s+/).map(normalize).filter(w => w.length > 0);
   if (spoken.length === 0) return;
 
-  const WINDOW = 12; // 앞으로 최대 몇 단어까지 탐색
-  let advanced = false;
+  // 항상 확정 위치에서 다시 매칭 → interim 반복 처리해도 위치 안정적
+  const newCursor = matchFrom(committedCursor, spoken);
+  if (newCursor > cursor) { cursor = newCursor; }
+  if (commit) { committedCursor = Math.max(committedCursor, cursor); }
 
-  for (const sw of spoken) {
-    let found = -1;
-    const limit = Math.min(cursor + WINDOW, words.length);
-    for (let i = cursor; i < limit; i++) {
-      if (wordsMatch(sw, words[i].norm)) { found = i; break; }
-    }
-    if (found >= 0) {
-      cursor = found + 1;
-      advanced = true;
-    }
-  }
-
-  if (advanced) {
-    updateHighlight();
-    scrollToCursor();
-  }
+  updateHighlight();
+  scrollToCursor();
 }
 
-// 단어 일치 판정: 완전일치 or 한쪽이 다른 쪽 포함(조사/어미 흡수)
+// 단어 일치 판정: 엄격하게. 완전일치 or 앞부분 일치(조사/어미만 흡수)
 function wordsMatch(a, b) {
   if (a === b) return true;
-  if (a.length >= 2 && b.length >= 2) {
-    if (a.startsWith(b) || b.startsWith(a)) return true;
-    if (a.includes(b) || b.includes(a)) return true;
-  }
+  // 짧은 단어(1글자)는 오매칭 많음 → 완전일치만
+  if (a.length < 2 || b.length < 2) return false;
+  // 한쪽이 다른 쪽으로 시작(예: '바람이'~'바람') — 조사/어미 흡수. 최소 2글자 공유
+  if (a.startsWith(b) || b.startsWith(a)) return true;
   return false;
 }
 
@@ -231,21 +236,11 @@ function initRecognition() {
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
 
-  let lastInterim = '';
-
   recognition.onresult = (e) => {
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const res = e.results[i];
-      const txt = res[0].transcript;
-      if (res.isFinal) {
-        matchTranscript(txt);
-        lastInterim = '';
-      } else {
-        // interim: 이전에 처리 안 한 뒷부분만 매칭 (버벅임 최소화)
-        matchTranscript(txt);
-        lastInterim = txt;
-      }
-    }
+    // 마지막 결과만 처리(현재 발화). interim은 미리보기, final만 확정 전진.
+    const res = e.results[e.results.length - 1];
+    const txt = res[0].transcript;
+    processTranscript(txt, res.isFinal);
     statusEl.textContent = '듣는 중… (' + Math.min(cursor, words.length) + '/' + words.length + ')';
   };
 
@@ -345,6 +340,7 @@ resetBtn.addEventListener('click', () => {
   setupEl.style.display = 'flex';
   statusEl.textContent = '';
   cursor = 0;
+  committedCursor = 0;
 });
 </script>
 </body>
