@@ -58,7 +58,7 @@
 
   /* 읽는 위치 기준선 */
   #guideline {
-    position: absolute; left: 0; right: 0; top: 35vh; height: 2px;
+    position: absolute; left: 0; right: 0; top: 28vh; height: 2px;
     background: rgba(255,213,74,0.35); pointer-events: none; z-index: 5;
   }
 </style>
@@ -176,8 +176,8 @@ function scrollToCursor() {
   const el = words[idx].el;
   const areaRect = scrollArea.getBoundingClientRect();
   const elRect = el.getBoundingClientRect();
-  // 기준선을 살짝 위(35%)로 → 아래로 더 많은 대본 노출
-  const targetY = areaRect.height * 0.35;
+  // 기준선을 위(28%)로 → 아래로 더 많은 대본 노출(체감 속도↑)
+  const targetY = areaRect.height * 0.28;
   const delta = (elRect.top - areaRect.top) - targetY;
   scrollArea.scrollBy({ top: delta, behavior: 'smooth' });
 }
@@ -186,14 +186,14 @@ function scrollToCursor() {
 // 최근 발화 여러 단어를 대본에 정렬해 '가장 많이 맞는' 위치로 이동.
 // - 놓친 단어는 건너뜀(GAP 허용) → 빨리 말해 한둘 흘려도 안 멈춤.
 // - 중복 구절은 문맥이 더 많이 맞는 위치로 가므로 엉뚱하게 안 튐.
-const SEARCH_AHEAD = 12; // 현재 위치 기준 앞으로 탐색 범위(작게=다음 반복줄까지 안 닿음)
+const SEARCH_AHEAD = 16; // 앞으로 탐색 범위(빠른 발화 회복력↑). 먼 점프는 아래 물리제한이 막음
 const SEARCH_BACK = 2;   // 살짝 되짚기 허용
 const GAP = 2;           // 대본에서 건너뛸 수 있는 최대 단어 수(국소화, 중간줄 뛰어넘기 방지)
-const TAIL = 8;          // 최근 발화 몇 단어만 사용(드리프트 방지)
+const TAIL = 10;         // 최근 발화 몇 단어까지 반영(빠르게 여러 단어 한번에 따라가기)
 const PENALTY = 1.2;     // 멀수록 감점(중복 오점프 강하게 억제). 근접 위치 고집
 const JUMP_LIMIT = 4;    // 이보다 멀리 뛰려면 다단어 확인 필요
 const CONFIRM = 5;       // 큰 점프 허용에 필요한 최소 일치 단어 수
-const LEAD = 4;          // 현재 단어보다 몇 단어 앞을 기준선에(따라가는 속도↑)
+const LEAD = 7;          // 현재 단어보다 몇 단어 앞을 기준선에(따라가는 속도↑)
 
 // start에서 spoken을 대본에 정렬 → { end: 도달위치, matched: 맞은 개수 }
 function alignAt(start, spoken) {
